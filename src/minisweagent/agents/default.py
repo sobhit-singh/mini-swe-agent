@@ -7,6 +7,7 @@ import logging
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel
@@ -36,12 +37,21 @@ class AgentConfig(BaseModel):
 
 
 class DefaultAgent:
-    def __init__(self, model: Model, env: Environment, *, config_class: type = AgentConfig, **kwargs):
+    def __init__(
+        self,
+        model: Model,
+        env: Environment,
+        *,
+        config_class: type = AgentConfig,
+        mcp_manager: Any = None,
+        **kwargs,
+    ):
         """See the `AgentConfig` class for permitted keyword arguments."""
         self.config = config_class(**kwargs)
         self.messages: list[dict] = []
         self.model = model
         self.env = env
+        self.mcp_manager = mcp_manager
         self.extra_template_vars = {}
         self.logger = logging.getLogger("agent")
         self.cost = 0.0
@@ -87,41 +97,51 @@ class DefaultAgent:
 
     def run(self, task: str = "", **kwargs) -> dict:
         """Run step() until agent is finished. Returns dictionary with exit_status, submission keys."""
-        self.extra_template_vars |= {"task": task, **kwargs}
-        self.messages = []
-        self.add_messages(
-            self.model.format_message(role="system", content=self._render_template(self.config.system_template)),
-            self.model.format_message(role="user", content=self._render_template(self.config.instance_template)),
-        )
-        while True:
-            try:
-                self.step()
-                self.n_consecutive_format_errors = 0  # reset on any clean step
-            except FormatError as e:
-                # The call was billed before parsing failed, so query() never got to charge it.
-                self.cost += e.messages[0].get("extra", {}).get("cost", 0.0)
-                self.n_consecutive_format_errors += 1
-                if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
-                    self.add_messages(
-                        *e.messages,
-                        {
-                            "role": "exit",
-                            "content": "RepeatedFormatError",
-                            "extra": {"exit_status": "RepeatedFormatError", "submission": ""},
-                        },
-                    )
-                else:
+        if self.mcp_manager:
+            self.mcp_manager.start()
+            if hasattr(self.model, "set_tools"):
+                from minisweagent.models.utils.actions_toolcall import BASH_TOOL
+
+                self.model.set_tools([BASH_TOOL, *self.mcp_manager.get_tools()])
+        try:
+            self.extra_template_vars |= {"task": task, **kwargs}
+            self.messages = []
+            self.add_messages(
+                self.model.format_message(role="system", content=self._render_template(self.config.system_template)),
+                self.model.format_message(role="user", content=self._render_template(self.config.instance_template)),
+            )
+            while True:
+                try:
+                    self.step()
+                    self.n_consecutive_format_errors = 0  # reset on any clean step
+                except FormatError as e:
+                    # The call was billed before parsing failed, so query() never got to charge it.
+                    self.cost += e.messages[0].get("extra", {}).get("cost", 0.0)
+                    self.n_consecutive_format_errors += 1
+                    if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
+                        self.add_messages(
+                            *e.messages,
+                            {
+                                "role": "exit",
+                                "content": "RepeatedFormatError",
+                                "extra": {"exit_status": "RepeatedFormatError", "submission": ""},
+                            },
+                        )
+                    else:
+                        self.add_messages(*e.messages)
+                except InterruptAgentFlow as e:
                     self.add_messages(*e.messages)
-            except InterruptAgentFlow as e:
-                self.add_messages(*e.messages)
-            except Exception as e:
-                self.handle_uncaught_exception(e)
-                raise
-            finally:
-                self.save(self.config.output_path)
-            if self.messages[-1].get("role") == "exit":
-                break
-        return self.messages[-1].get("extra", {})
+                except Exception as e:
+                    self.handle_uncaught_exception(e)
+                    raise
+                finally:
+                    self.save(self.config.output_path)
+                if self.messages[-1].get("role") == "exit":
+                    break
+            return self.messages[-1].get("extra", {})
+        finally:
+            if self.mcp_manager:
+                self.mcp_manager.close()
 
     def step(self) -> list[dict]:
         """Query the LM, execute actions."""
@@ -153,7 +173,12 @@ class DefaultAgent:
 
     def execute_actions(self, message: dict) -> list[dict]:
         """Execute actions in message, add observation messages, return them."""
-        outputs = [self.env.execute(action) for action in message.get("extra", {}).get("actions", [])]
+        outputs = []
+        for action in message.get("extra", {}).get("actions", []):
+            if action.get("tool_name", "bash") == "bash" or not self.mcp_manager:
+                outputs.append(self.env.execute(action))
+            else:
+                outputs.append(self.mcp_manager.execute(action))
         return self.add_messages(*self.model.format_observation_messages(message, outputs, self.get_template_vars()))
 
     def serialize(self, *extra_dicts) -> dict:
