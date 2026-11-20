@@ -97,7 +97,7 @@ def main(
         console.print("[bold green]Got that, thanks![/bold green]")
 
     mcp_manager = None
-    if mcp_config := config.get("mcp", {}):
+    if (mcp_config := config.get("mcp")) and mcp_config.get("servers"):
         from minisweagent.mcp import MCPManager
 
         mcp_manager = MCPManager(mcp_config)

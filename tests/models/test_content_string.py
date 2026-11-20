@@ -79,3 +79,20 @@ class TestGetContentString:
 
     def test_content_list_skips_non_dict_items(self):
         assert get_content_string({"content": ["bare string", 42]}) == ""
+
+    def test_content_string_mcp_tool_call(self):
+        msg = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "fetch__get",
+                        "arguments": '{"url": "https://example.com"}',
+                    },
+                }
+            ],
+        }
+        res = get_content_string(msg)
+        assert "[mcp:fetch__get]" in res
+        assert "https://example.com" in res

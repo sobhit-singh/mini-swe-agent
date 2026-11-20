@@ -4,8 +4,14 @@ import os
 import threading
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+except ImportError as e:
+    raise ImportError(
+        "The 'mcp' package is required to use MCP tools. "
+        "Please install it with: pip install 'mini-swe-agent[mcp]'"
+    ) from e
 
 from minisweagent.mcp.config import MCPConfig
 
@@ -23,7 +29,7 @@ class MCPManager:
         self._exit_stack: contextlib.AsyncExitStack | None = None
         self._sessions: dict[str, ClientSession] = {}
         self._tools: list[dict] = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def start(self, timeout: float = 30.0) -> None:
         """Start all configured MCP stdio servers."""
@@ -35,8 +41,12 @@ class MCPManager:
             self._loop = asyncio.new_event_loop()
             self._thread = threading.Thread(target=self._run_loop, daemon=True)
             self._thread.start()
-            future = asyncio.run_coroutine_threadsafe(self._async_start(), self._loop)
-            future.result(timeout=timeout)
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._async_start(), self._loop)
+                future.result(timeout=timeout)
+            except Exception:
+                self.close()
+                raise
 
     def _run_loop(self) -> None:
         assert self._loop is not None
@@ -45,13 +55,19 @@ class MCPManager:
 
     async def _async_start(self) -> None:
         self._exit_stack = contextlib.AsyncExitStack()
-        for name, server_cfg in self.config.servers.items():
-            env = {**os.environ, **server_cfg.env} if server_cfg.env else None
-            params = StdioServerParameters(command=server_cfg.command, args=server_cfg.args, env=env)
-            read_stream, write_stream = await self._exit_stack.enter_async_context(stdio_client(params))
-            session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await session.initialize()
-            self._sessions[name] = session
+        try:
+            for name, server_cfg in self.config.servers.items():
+                env = {**os.environ, **server_cfg.env} if server_cfg.env else None
+                params = StdioServerParameters(command=server_cfg.command, args=server_cfg.args, env=env)
+                read_stream, write_stream = await self._exit_stack.enter_async_context(stdio_client(params))
+                session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
+                await session.initialize()
+                self._sessions[name] = session
+        except Exception:
+            await self._exit_stack.aclose()
+            self._exit_stack = None
+            self._sessions.clear()
+            raise
 
     def get_tools(self, timeout: float = 15.0) -> list[dict]:
         """Fetch and return available tools from all connected MCP servers."""
@@ -96,11 +112,20 @@ class MCPManager:
                 "returncode": 1,
                 "exception_info": f"MCP server '{server_name}' is not connected.",
             }
-        assert self._loop is not None
-        future = asyncio.run_coroutine_threadsafe(
-            self._async_execute(session, actual_name, action.get("arguments", {})), self._loop
-        )
-        return future.result(timeout=timeout)
+        try:
+            if not self._loop or not self._loop.is_running():
+                raise RuntimeError("MCP event loop is not running")
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_execute(session, actual_name, action.get("arguments", {})), self._loop
+            )
+            return future.result(timeout=timeout)
+        except Exception as e:
+            err_msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            return {
+                "output": err_msg,
+                "returncode": 1,
+                "exception_info": f"MCP execution error: {err_msg}",
+            }
 
     async def _async_execute(self, session: ClientSession, tool_name: str, arguments: dict) -> dict[str, Any]:
         try:
@@ -119,10 +144,11 @@ class MCPManager:
                 "exception_info": output_text if is_error else "",
             }
         except Exception as e:
+            err_msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
             return {
-                "output": str(e),
+                "output": err_msg,
                 "returncode": 1,
-                "exception_info": f"MCP execution error: {e}",
+                "exception_info": f"MCP execution error: {err_msg}",
             }
 
     def close(self, timeout: float = 10.0) -> None:

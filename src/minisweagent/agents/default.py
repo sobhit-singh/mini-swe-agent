@@ -97,13 +97,13 @@ class DefaultAgent:
 
     def run(self, task: str = "", **kwargs) -> dict:
         """Run step() until agent is finished. Returns dictionary with exit_status, submission keys."""
-        if self.mcp_manager:
-            self.mcp_manager.start()
-            if hasattr(self.model, "set_tools"):
-                from minisweagent.models.utils.actions_toolcall import BASH_TOOL
-
-                self.model.set_tools([BASH_TOOL, *self.mcp_manager.get_tools()])
         try:
+            if self.mcp_manager:
+                self.mcp_manager.start()
+                if hasattr(self.model, "set_tools"):
+                    from minisweagent.models.utils.actions_toolcall import BASH_TOOL
+
+                    self.model.set_tools([BASH_TOOL, *self.mcp_manager.get_tools()])
             self.extra_template_vars |= {"task": task, **kwargs}
             self.messages = []
             self.add_messages(

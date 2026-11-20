@@ -81,3 +81,23 @@ def test_interactive_agent_confirm_mcp_action():
     mcp_manager.execute.assert_called_once()
     assert len(obs) == 1
     assert obs[0]["content"] == "mcp done"
+
+
+def test_interactive_agent_empty_bash_command_not_mcp():
+    model = MagicMock()
+    model.get_template_vars.return_value = {}
+    model.serialize.return_value = {}
+    model.format_observation_messages.return_value = []
+
+    env = MagicMock()
+    agent = InteractiveAgent(
+        model=model,
+        env=env,
+        mode="yolo",
+        system_template="system",
+        instance_template="instance",
+    )
+
+    message = {"role": "assistant", "extra": {"actions": [{"command": ""}]}}
+    agent.execute_actions(message)
+    env.execute.assert_called_once_with({"command": ""})

@@ -16,5 +16,14 @@ def fail(reason: str) -> str:
     raise ToolError(f"failed: {reason}")
 
 
+@server.tool()
+def slow() -> str:
+    """Sleeps to simulate slow execution"""
+    import time
+
+    time.sleep(2)
+    return "slow done"
+
+
 if __name__ == "__main__":
     server.run("stdio")

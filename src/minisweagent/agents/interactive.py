@@ -126,7 +126,9 @@ class InteractiveAgent(DefaultAgent):
         # Override to handle user confirmation and confirm_exit, with try/finally to preserve partial outputs
         actions = message.get("extra", {}).get("actions", [])
         commands = [
-            action.get("command") or f"[mcp:{action.get('tool_name')}] {json.dumps(action.get('arguments', {}))}"
+            action["command"]
+            if action.get("tool_name", "bash") == "bash" and "command" in action
+            else f"[mcp:{action.get('tool_name')}] {json.dumps(action.get('arguments', {}))}"
             for action in actions
         ]
         outputs = []
