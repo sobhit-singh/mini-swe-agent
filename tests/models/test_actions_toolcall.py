@@ -85,6 +85,29 @@ class TestParseToolcallActions:
             parse_toolcall_actions([tool_call], format_error_template="{{ error }}")
         assert "Missing 'command' argument" in exc_info.value.messages[0]["content"]
 
+    def test_valid_mcp_tool_call(self):
+        tool_call = MagicMock()
+        tool_call.function.name = "fetch__get"
+        tool_call.function.arguments = '{"url": "https://example.com"}'
+        tool_call.id = "call_456"
+        res = parse_toolcall_actions(
+            [tool_call],
+            format_error_template="{{ error }}",
+            valid_tool_names=["bash", "fetch__get"],
+        )
+        assert res == [
+            {"tool_name": "fetch__get", "arguments": {"url": "https://example.com"}, "tool_call_id": "call_456"}
+        ]
+
+    def test_mcp_tool_call_rejected_if_not_in_valid_tool_names(self):
+        tool_call = MagicMock()
+        tool_call.function.name = "fetch__get"
+        tool_call.function.arguments = '{"url": "https://example.com"}'
+        tool_call.id = "call_456"
+        with pytest.raises(FormatError) as exc_info:
+            parse_toolcall_actions([tool_call], format_error_template="{{ error }}")
+        assert "Unknown tool 'fetch__get'" in exc_info.value.messages[0]["content"]
+
 
 class TestFormatToolcallObservationMessages:
     def test_basic_formatting(self):
@@ -141,3 +164,12 @@ class TestBashTool:
         assert BASH_TOOL["function"]["name"] == "bash"
         assert "command" in BASH_TOOL["function"]["parameters"]["properties"]
         assert "command" in BASH_TOOL["function"]["parameters"]["required"]
+
+    def test_litellm_model_set_tools(self):
+        from minisweagent.models.litellm_model import LitellmModel
+        model = LitellmModel(model_name="mock-model")
+        assert len(model.tools) == 1
+        assert model.tools[0]["function"]["name"] == "bash"
+        extra_tool = {"type": "function", "function": {"name": "fetch__get"}}
+        model.set_tools([BASH_TOOL, extra_tool])
+        assert len(model.tools) == 2

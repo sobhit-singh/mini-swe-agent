@@ -58,15 +58,19 @@ class LitellmModel:
 
     def __init__(self, *, config_class: Callable = LitellmModelConfig, **kwargs):
         self.config = config_class(**kwargs)
+        self.tools: list[dict] = [BASH_TOOL]
         if self.config.litellm_model_registry and Path(self.config.litellm_model_registry).is_file():
             litellm.utils.register_model(json.loads(Path(self.config.litellm_model_registry).read_text()))
+
+    def set_tools(self, tools: list[dict]) -> None:
+        self.tools = tools
 
     def _query(self, messages: list[dict[str, str]], **kwargs):
         try:
             return litellm.completion(
                 model=self.config.model_name,
                 messages=messages,
-                tools=[BASH_TOOL],
+                tools=self.tools,
                 **(self.config.model_kwargs | kwargs),
             )
         except litellm.exceptions.AuthenticationError as e:
@@ -128,10 +132,12 @@ class LitellmModel:
     def _parse_actions(self, response) -> list[dict]:
         """Parse tool calls from the response. Raises FormatError if unknown tool."""
         tool_calls = response.choices[0].message.tool_calls or []
+        valid_tool_names = [t.get("function", {}).get("name") for t in self.tools if "function" in t]
         return parse_toolcall_actions(
             tool_calls,
             format_error_template=self.config.format_error_template,
             template_kwargs={"finish_reason": response.choices[0].finish_reason},
+            valid_tool_names=valid_tool_names,
         )
 
     def format_message(self, **kwargs) -> dict:
