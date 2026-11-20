@@ -96,9 +96,18 @@ def main(
         run_task = _multiline_prompt()
         console.print("[bold green]Got that, thanks![/bold green]")
 
+    mcp_manager = None
+    if mcp_config := config.get("mcp", {}):
+        from minisweagent.mcp import MCPManager
+
+        mcp_manager = MCPManager(mcp_config)
+
     model = get_model(config=config.get("model", {}))
     env = get_environment(config.get("environment", {}), default_type="local")
-    agent = get_agent(model, env, config.get("agent", {}), default_type="interactive")
+    agent_config = {**config.get("agent", {})}
+    if mcp_manager is not None:
+        agent_config["mcp_manager"] = mcp_manager
+    agent = get_agent(model, env, agent_config, default_type="interactive")
     agent.run(run_task)
     if (output_path := config.get("agent", {}).get("output_path")):
         console.print(f"Saved trajectory to [bold green]'{output_path}'[/bold green]")
